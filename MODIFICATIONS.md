@@ -87,4 +87,58 @@ rosparam set /grasp_controller/planning_mode true
 - ✅ frame_id：`panda_link0`
 - ✅ NBV 计算的不同视角位姿都能正常发布
 
+### ROS1–ROS2 桥接测试（ros1_bridge）
+
+1. **启动带 NBV 的 ROS1 容器（建议用 host 网络，宿主机终端1）**
+   ```bash
+   cd /home/nros/Documents/apm/active_grasp_ws
+   xhost +local:docker
+   docker run -it --rm --name active_grasp \
+     --network host \
+     -v $(pwd)/src/active_grasp:/root/active_grasp_ws/src/active_grasp \
+     -v $(pwd)/src/robot_helpers:/root/active_grasp_ws/src/robot_helpers \
+     -v $(pwd)/src/vgn:/root/active_grasp_ws/src/vgn \
+     -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+     active_grasp_noetic
+   ```
+
+2. **容器内启动环境（终端1，容器内）**
+   ```bash
+   source /opt/ros/noetic/setup.bash
+   catkin build active_grasp
+   source devel/setup.bash
+   roslaunch active_grasp env.launch sim:=true
+   # RViz 会自动启动
+   ```
+
+3. **容器内运行 NBV + 视角发布（终端2，新开容器 shell）**
+   ```bash
+   docker exec -it active_grasp bash
+   source /opt/ros/noetic/setup.bash
+   source /root/active_grasp_ws/devel/setup.bash
+   rosparam set /grasp_controller/planning_mode true
+   python3 /root/active_grasp_ws/src/active_grasp/scripts/run.py nbv --runs 1
+   ```
+
+4. **宿主机启动 ros1_bridge（终端3，宿主机）**
+   ```bash
+   # 激活 ROS2 环境 + 启动 bridge（机器上已配置好 alias）
+   start_ros_bridge
+   # 实际等价于：
+   #   source ~/.local/ros2_rc
+   #   source ~/Documents/Woosh/ros_bridge/ros-humble-ros1-bridge/install/local_setup.zsh
+   #   ros2 run ros1_bridge dynamic_bridge --bridge-all-topics
+   ```
+
+5. **ROS2 侧检查桥接结果（终端4，宿主机）**
+   ```bash
+   # 激活 ROS2 环境（如有 rws/rr 等别名，按本机习惯执行）
+   rws   # 或 source ~/.local/ros2_rc
+
+   ros2 topic list | grep viewpoint
+   ros2 topic echo /grasp_controller/viewpoint_pose
+   ```
+
+6. **预期：ROS2 侧能看到与 ROS1 中相同的 `/grasp_controller/viewpoint_pose` 消息**
+
 ---
