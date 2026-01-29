@@ -1,7 +1,7 @@
 from controller_manager_msgs.srv import *
 import copy
 import cv_bridge
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, PoseStamped
 import numpy as np
 import rospy
 from sensor_msgs.msg import Image
@@ -36,6 +36,8 @@ class GraspController:
         self.control_rate = rospy.get_param("~control_rate")
         self.linear_vel = rospy.get_param("~linear_vel")
         self.policy_rate = rospy.get_param("policy/rate")
+        # Planning mode: if True, only publish poses instead of executing
+        self.planning_mode = rospy.get_param("~planning_mode", False)
 
     def init_service_proxies(self):
         self.reset_env = rospy.ServiceProxy("reset", Reset)
@@ -48,6 +50,11 @@ class GraspController:
         self.gripper = PandaGripperClient()
         topic = rospy.get_param("cartesian_velocity_controller/topic")
         self.cartesian_vel_pub = rospy.Publisher(topic, Twist, queue_size=10)
+        # Initialize viewpoint pose publisher for planning mode (NBV-computed viewpoint)
+        if self.planning_mode:
+            from robot_helpers.ros.conversions import to_pose_stamped_msg
+            self.to_pose_stamped_msg = to_pose_stamped_msg
+            self.viewpoint_pose_pub = rospy.Publisher("~viewpoint_pose", PoseStamped, queue_size=10)
 
     def init_moveit(self):
         self.moveit = MoveItClient("panda_arm")
@@ -104,6 +111,11 @@ class GraspController:
         while not self.policy.done:
             img, pose, q = self.get_state()
             self.policy.update(img, pose, q)
+            # Publish NBV-computed viewpoint pose in planning mode
+            if self.planning_mode and self.policy.x_d is not None:
+                self.viewpoint_pose_pub.publish(
+                    self.to_pose_stamped_msg(self.policy.x_d, self.base_frame)
+                )
             r.sleep()
         rospy.sleep(0.2)  # Wait for a zero command to be sent to the robot.
         self.policy.deactivate()
@@ -144,16 +156,23 @@ class GraspController:
         success, plan = self.moveit.plan(T_base_approach, 0.2, 0.2)
         if success:
             self.moveit.scene.clear()
-            self.moveit.execute(plan)
-            rospy.sleep(0.5)  # Wait for the planning scene to be updated
-            self.moveit.gotoL(T_base_grasp * self.T_grasp_ee)
-            rospy.sleep(0.5)
-            self.gripper.grasp()
-            T_base_retreat = Transform.t_[0, 0, 0.05] * T_base_grasp * self.T_grasp_ee
-            self.moveit.gotoL(T_base_retreat)
-            rospy.sleep(1.0)  # Wait to see whether the object slides out of the hand
-            success = self.gripper.read() > 0.002
-            return "succeeded" if success else "failed"
+            
+            # Planning mode: skip execution (viewpoint poses are published in search_grasp)
+            if self.planning_mode:
+                rospy.loginfo("Planning mode: Skipping execution (viewpoint poses published during search)")
+                return "published"  # Return a different status for planning mode
+            else:
+                # Original execution mode
+                self.moveit.execute(plan)
+                rospy.sleep(0.5)  # Wait for the planning scene to be updated
+                self.moveit.gotoL(T_base_grasp * self.T_grasp_ee)
+                rospy.sleep(0.5)
+                self.gripper.grasp()
+                T_base_retreat = Transform.t_[0, 0, 0.05] * T_base_grasp * self.T_grasp_ee
+                self.moveit.gotoL(T_base_retreat)
+                rospy.sleep(1.0)  # Wait to see whether the object slides out of the hand
+                success = self.gripper.read() > 0.002
+                return "succeeded" if success else "failed"
         else:
             return "no_motion_plan_found"
 
