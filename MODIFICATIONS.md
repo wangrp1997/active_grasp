@@ -4,7 +4,7 @@
 
 ---
 
-## 2025-01-29: 添加规划模式（Planning Mode）
+## 2026-01-29: 添加规划模式（Planning Mode）
 
 ### 目标
 将 active_grasp 改为"规划模式"，只发布 NBV 算出的视角位姿，不直接控制机械臂。
@@ -140,5 +140,84 @@ rosparam set /grasp_controller/planning_mode true
    ```
 
 6. **预期：ROS2 侧能看到与 ROS1 中相同的 `/grasp_controller/viewpoint_pose` 消息**
+
+---
+
+## 2026-01-30: ROS2 可视化节点测试
+
+### 目标
+测试 ROS2 可视化节点，在 RViz2 中显示视角位姿（相机视锥）。
+
+### 修改文件
+- `ros2_ws/src/active_grasp_ros2_bridge/active_grasp_ros2_bridge/viewpoint_visualizer.py`（新建）
+- `ros2_ws/src/active_grasp_ros2_bridge/setup.py`（添加节点入口）
+- `ros2_ws/src/active_grasp_ros2_bridge/package.xml`（添加依赖）
+
+### 功能说明
+- 订阅 ROS1 桥接过来的 `/grasp_controller/viewpoint_pose`（`geometry_msgs/msg/PoseStamped`）
+- 订阅相机信息 `/woosh/camera/woosh_left_hand_rgbd/depth/camera_info`（获取内参）
+- 将 frame_id 从 `panda_link0` 改为 `woosh_base_link`（测试阶段，不做坐标变换）
+- 发布相机视锥 Marker 到 `/active_grasp/viewpoint_markers`（`visualization_msgs/msg/Marker`）
+
+### 测试步骤
+
+1. **编译 ROS2 包（宿主机）**
+   ```bash
+   cd /home/nros/Documents/apm/active_grasp_ws/ros2_ws
+   rws  # 或 source ~/.local/ros2_rc
+   colcon build --packages-select active_grasp_ros2_bridge
+   source install/setup.bash
+   ```
+
+2. **确保 ROS1 容器和 ros1_bridge 已启动**
+   - ROS1 容器运行中，已设置 `planning_mode=true` 并运行 `run.py nbv`
+   - `ros1_bridge` 已启动（`start_ros_bridge`）
+
+3. **检查话题（宿主机，ROS2 环境）**
+   ```bash
+   rws
+   ros2 topic list | grep viewpoint
+   ros2 topic list | grep camera
+   ```
+
+4. **启动可视化节点（宿主机，ROS2 环境）**
+   ```bash
+   rws
+   source install/setup.bash
+   ros2 run active_grasp_ros2_bridge viewpoint_visualizer
+   ```
+
+5. **在 RViz2 中查看**
+   - 如果已有 RViz2 运行（如 `woosh_bringup moveit_servo.launch.py`），直接添加 Marker 显示
+   - 或单独启动 RViz2：
+     ```bash
+     rws
+     rviz2
+     ```
+   - 在 RViz2 中：
+     - Fixed Frame 设置为 `woosh_base_link`
+     - 添加 Marker 显示，话题选择 `/active_grasp/viewpoint_markers`
+     - 应该能看到蓝色相机视锥
+
+### 预期结果
+- ✅ 节点正常启动，无报错
+- ✅ 能接收到视角位姿和相机信息
+- ✅ RViz2 中能看到相机视锥显示
+
+### 测试结果（2026-01-30）
+- ✅ 成功复现原项目的轨迹可视化效果
+- ✅ 发布实际到达的视角位姿（当前相机位姿 `pose`），而非目标视角 `x_d`
+- ✅ 在 RViz2 中正确显示：
+  - 轨迹点（蓝色球体，SPHERE_LIST）
+  - 连接线（蓝色线条，LINE_STRIP）
+  - 视锥（每4个视角一个，蓝色相机视锥）
+- ✅ 添加重复位姿过滤逻辑，提高发布稳定性（阈值：位置和姿态差异 < 1e-6）
+
+### 关键修改点
+1. **controller.py**: 发布实际相机位姿 `pose` 而非目标视角 `x_d`
+2. **viewpoint_visualizer.py**: 
+   - 实现与原项目一致的 `path()` 方法（球体列表 + 线条 + 视锥）
+   - 添加重复位姿过滤，提高稳定性
+   - 使用 MarkerArray 发布所有 markers
 
 ---

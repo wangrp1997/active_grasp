@@ -111,10 +111,12 @@ class GraspController:
         while not self.policy.done:
             img, pose, q = self.get_state()
             self.policy.update(img, pose, q)
-            # Publish NBV-computed viewpoint pose in planning mode
-            if self.planning_mode and self.policy.x_d is not None:
+            # Publish actual viewpoint pose (current camera pose) in planning mode
+            # Note: This matches what the original code displays in path() - self.policy.views
+            # which are the actual reached viewpoints, not the target x_d
+            if self.planning_mode:
                 self.viewpoint_pose_pub.publish(
-                    self.to_pose_stamped_msg(self.policy.x_d, self.base_frame)
+                    self.to_pose_stamped_msg(pose, self.base_frame)
                 )
             r.sleep()
         rospy.sleep(0.2)  # Wait for a zero command to be sent to the robot.
