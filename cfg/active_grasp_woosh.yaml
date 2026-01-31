@@ -1,0 +1,38 @@
+bt_sim:
+  gui: True
+  gripper_force: 10
+  scene: random
+
+hw:
+  roi_calib_file: $(find active_grasp)/cfg/hw/T_base_tag.txt
+  scene_file: $(find active_grasp)/cfg/hw/scene01.yaml
+
+grasp_controller:
+  base_frame_id: woosh_base_link  # 真实机器人基坐标系
+  ee_grasp_offset: [0.0, 0.0, -0.383, 0.924, 0.0, 0.0, 0.065]  # 注意：这是 Panda 的 offset，woosh 可能需要调整
+  control_rate: 30
+  linear_vel: 0.05
+  camera:
+    # 真实相机话题（通过 ros1_bridge 桥接）
+    # 注意：这些话题需要先通过 ros1_bridge 从 ROS2 桥接到 ROS1
+    frame_id: woosh_left_hand_rgbd_depth_optical_frame  # 真实相机坐标系
+    info_topic: /woosh/camera/woosh_left_hand_rgbd/depth/camera_info  # ROS2 真实相机内参话题（桥接后）
+    depth_topic: /woosh/camera/woosh_left_hand_rgbd/depth/image_rect_raw  # ROS2 真实相机深度图话题（桥接后）
+    min_z_dist: 0.3
+
+cartesian_velocity_controller:
+  topic: /cartesian_velocity_controller/set_command
+
+vgn:
+  model: $(find vgn)/assets/models/vgn_conv.pth
+  finger_depth: 0.05
+  qual_threshold: 0.9
+
+policy:
+  rate: 4
+  window_size: 12
+
+nbv_grasp:
+  max_views: 80
+  min_gain: 10
+  downsample: 10  # 10/20 for sim/hw respectively

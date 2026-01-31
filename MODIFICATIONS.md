@@ -221,3 +221,128 @@ rosparam set /grasp_controller/planning_mode true
    - 使用 MarkerArray 发布所有 markers
 
 ---
+
+## 2026-01-30: TF 桥接实现（ROS2 → ROS1）
+
+### 目标
+实现 ROS2 TF 到 ROS1 TF 的桥接，使 active_grasp 能够获取真实相机相对于基坐标系的位姿。
+
+### 问题背景
+- active_grasp 在 ROS1 容器中运行，需要相机位姿进行 TSDF 重建
+- 真实相机安装在机械臂上（左手），TF 在 ROS2 环境中动态发布
+- `ros1_bridge` 默认只桥接话题，不桥接 TF
+- `get_state()` 中 `tf.lookup(woosh_base_link, woosh_left_hand_rgbd_depth_optical_frame)` 需要这个 TF
+
+### 解决方案
+采用两个节点的方案（方案 A）：
+1. **ROS2 节点**：订阅 ROS2 TF，发布 `TransformStamped` 话题
+2. **ROS1 节点**：订阅话题（通过 ros1_bridge 桥接），发布到 ROS1 TF 树
+
+### 修改文件
+- `ros2_ws/src/active_grasp_ros2_bridge/active_grasp_ros2_bridge/tf_bridge_ros2.py`（新建）
+- `src/active_grasp/scripts/tf_bridge_ros1.py`（新建）
+- `ros2_ws/src/active_grasp_ros2_bridge/setup.py`（添加 ROS2 节点入口）
+- `src/active_grasp/launch/env_woosh.launch`（添加 ROS1 节点启动）
+
+### 功能说明
+
+#### ROS2 节点 (`tf_bridge_ros2.py`)
+- 订阅 ROS2 TF：`woosh_base_link` → `woosh_left_hand_rgbd_depth_optical_frame`
+- 发布话题：`/tf_bridge/transform`（`geometry_msgs/TransformStamped`）
+- 频率：30 Hz（可配置）
+
+#### ROS1 节点 (`tf_bridge_ros1.py`)
+- 订阅话题：`/tf_bridge/transform`（通过 ros1_bridge 桥接）
+- 发布 TF：`woosh_base_link` → `woosh_left_hand_rgbd_depth_optical_frame`
+- 自动启动：在 `env_woosh.launch` 中自动启动
+
+### 数据流
+```
+ROS2 TF 树
+  ↓
+ROS2 节点 (tf_bridge_ros2)
+  ↓
+/tf_bridge/transform 话题 (ROS2)
+  ↓
+ros1_bridge (自动桥接)
+  ↓
+/tf_bridge/transform 话题 (ROS1)
+  ↓
+ROS1 节点 (tf_bridge_ros1)
+  ↓
+ROS1 TF 树
+  ↓
+active_grasp get_state() 中的 tf.lookup()
+```
+
+### 测试步骤
+
+1. **编译 ROS2 包（宿主机）**
+   ```bash
+   cd /home/nros/Documents/apm/active_grasp_ws/ros2_ws
+   rws  # 或 source ~/.local/ros2_rc
+   colcon build --packages-select active_grasp_ros2_bridge --symlink-install
+   source install/setup.bash
+   ```
+
+2. **启动 ROS2 TF 桥接节点（宿主机，ROS2 环境）**
+   ```bash
+   rws
+   source install/setup.bash
+   ros2 run active_grasp_ros2_bridge tf_bridge_ros2
+   ```
+
+3. **启动 ros1_bridge（宿主机，ROS2 环境）**
+   ```bash
+   rws
+   start_ros_bridge  # 或手动启动 dynamic_bridge
+   ```
+   - 这会自动桥接 `/tf_bridge/transform` 话题
+
+4. **启动 active_grasp（ROS1 容器）**
+   ```bash
+   # 在容器内
+   source /opt/ros/noetic/setup.bash
+   source /root/active_grasp_ws/devel/setup.bash
+   roslaunch active_grasp env_woosh.launch sim:=true
+   ```
+   - 这会自动启动 `tf_bridge_ros1` 节点
+
+5. **验证 TF 桥接（ROS1 容器）**
+   ```bash
+   # 在容器内
+   rostopic echo /tf_bridge/transform
+   # 应该能看到 TransformStamped 消息
+   
+   # 检查 TF 树
+   rosrun tf view_frames
+   # 或
+   rosrun tf tf_echo woosh_base_link woosh_left_hand_rgbd_depth_optical_frame
+   ```
+
+6. **运行算法测试（ROS1 容器）**
+   ```bash
+   # 在容器内
+   rosparam set /grasp_controller/planning_mode true
+   python3 /root/active_grasp_ws/src/active_grasp/scripts/run.py nbv --runs 1
+   ```
+   - 检查 `get_state()` 是否能正常获取相机位姿
+   - 检查是否有 TF lookup 错误
+
+### 预期结果
+- ✅ ROS2 节点正常启动，能订阅到 TF
+- ✅ `/tf_bridge/transform` 话题正常发布（ROS2）
+- ✅ ros1_bridge 自动桥接话题到 ROS1
+- ✅ ROS1 节点正常启动，能订阅到话题
+- ✅ ROS1 TF 树中有 `woosh_base_link` → `woosh_left_hand_rgbd_depth_optical_frame` 的 TF
+- ✅ `get_state()` 中的 `tf.lookup()` 能正常工作
+- ✅ 算法能正常运行，无 TF 相关错误
+
+**⚠️ 测试状态**：上述测试失败，已放弃。主要问题为 KDL 运动学链查找错误（`Couldn't find chain woosh_base_link to woosh_left_hand_rgbd_depth_optical_frame`），即使 TF 桥接正常工作，IK solver 仍无法在 Panda 仿真环境中找到 Realman 的链。后续采用 `planning_mode` 方案，使用 Panda 原始 frame 进行 IK 求解。但由于仍然无法显示点云，最终将 `controller.py` 和 `policy.py` 恢复到上一个版本。
+
+### 注意事项
+- **安全确认**：在仿真模式下（`sim:=true`），速度命令只控制仿真的 Panda 机器人，不会影响真实的 Realman 机器人
+- **TF 更新频率**：默认 30 Hz，可根据需要调整
+- **话题名称**：默认 `/tf_bridge/transform`，可通过参数修改
+
+---
